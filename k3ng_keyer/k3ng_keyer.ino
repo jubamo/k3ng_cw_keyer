@@ -1788,6 +1788,46 @@ Recent Update History
         correctness fix, just a cleanup. Compile-verified (arduino:avr:mega, FEATURE_LCD_ST7032 enabled,
         bundled library via --library flag) - not hardware-tested, don't have this display.
 
+    2026.10.23.1125
+      Fixed the command button (button 0) occasionally reading as "no button pressed" (GitHub #148
+        follow-up, reported after the earlier majority-vote/bounce-timing fix in this same issue).
+        Button::InitLimits(step) (src/buttonarray/buttonarray.cpp) computes each button's low_limit_ by
+        averaging against a "virtual neighbor" at step-1; for button 0 (the lowest step, no real neighbor
+        below it) that makes step-1 negative, so the inner expression legitimately comes out negative too -
+        matching this function's own doc comment example ("0: -56 - 46"). But button_value/
+        lower_button_value/higher_button_value were cast to uint32_t, and casting a negative float to an
+        unsigned type is undefined behavior in C++ - in practice this collapsed low_limit_ for button 0 to
+        0 on at least the reporter's toolchain. Button::Pressed()'s low-bound check is a strict ">", so a
+        button-0 press reading exactly 0 (very plausible - it's the lowest step, often a dead short to
+        ground) failed to match its own button, looking identical to "no button pressed." Fixed by casting
+        to int32_t instead, which preserves the intended negative low_limit_ for button 0 (now -56, as the
+        doc comment always said it should be) and changes nothing for every other button (step/step+1 are
+        never negative there). The reporter's own proposed workaround (flipping Pressed()'s comparison to
+        >=/<) masked the same symptom but only because the UB-derived value happened to resolve to exactly
+        0 on their specific toolchain - not guaranteed on every architecture, so fixed the actual cast
+        instead of relying on that. Ported from next_gen_version_development, where this was found and
+        fixed first - unrelated to the M1-M5 non-blocking refactor. Compile-verified (arduino:avr:mega,
+        FEATURE_BUTTONS enabled) - not yet confirmed on the reporter's hardware.
+
+    2026.10.23.1832
+      Raised FEATURE_DEAD_OP_WATCHDOG's "stuck paddle" threshold from 100 to 200 consecutive same-type
+        elements, at the user's request after investigating a report of it tripping during WinKey
+        emulation testing. Traced the mechanism thoroughly first: dit_counter/dah_counter (the counters
+        check_for_dead_op() checks) are incremented only by check_dit_paddle()/check_dah_paddle() reading
+        the real physical paddle pins - there is no code path where WinKey host-driven serial sending
+        touches these counters, and check_paddles() (which calls both) runs every loop() iteration
+        regardless of whether a WinKey host has control, since paddle break-in has to keep working either
+        way. Paddle pins are properly INPUT_PULLUP, ruling out a floating-pin false trigger with no paddle
+        connected. Concluded the watchdog was working as designed, just easy to trip by accident: 100
+        consecutive elements is only ~3-6 seconds of continuously holding one paddle side at 20-35 WPM -
+        easily reached while deliberately testing whether the paddle can break into/interrupt WinKey host
+        sending, a standard thing to test. Not a bug in the WinKey/dead-op interaction; just raised the
+        threshold since 100 was an easy accidental trip for legitimate paddle-hold testing. dit_counter/
+        dah_counter are byte (0-255), so 200 remains safely within range. Ported from
+        next_gen_version_development, where this was applied first. Compile-verified (arduino:avr:mega,
+        FEATURE_DEAD_OP_WATCHDOG explicitly enabled to confirm the changed code path is actually
+        exercised).
+
   qwerty
 
   Documentation: https://github.com/k3ng/k3ng_cw_keyer/wiki
@@ -1818,7 +1858,7 @@ If you offer a hardware kit using this software, show your appreciation by sendi
 */
 
 
-#define CODE_VERSION "2026.10.22.2140"
+#define CODE_VERSION "2026.10.23.1832"
 
 #define eeprom_magic_number 52               // you can change this number to have the unit re-initialize EEPROM
 
@@ -4519,7 +4559,7 @@ void check_memory_repeat() {
 #ifdef FEATURE_DEAD_OP_WATCHDOG
 void check_for_dead_op()
 
-  // if the dit or dah paddle is stuck, disable the transmitter line after 100 straight dits or dahs
+  // if the dit or dah paddle is stuck, disable the transmitter line after 200 straight dits or dahs
   // go in and out of command mode to clear or just reset the unit
 
 {
@@ -4528,7 +4568,7 @@ void check_for_dead_op()
     debug_serial_port->println(F("loop: entering check_for_dead_op"));
   #endif
 
-  if (dead_op_watchdog_active && ((dit_counter > 100) || (dah_counter > 100))) {
+  if (dead_op_watchdog_active && ((dit_counter > 200) || (dah_counter > 200))) {
     // Bugfix: used to just set key_tx = 0 here. tx_and_sidetone_key() gates its digitalWrite() in
     // BOTH directions on key_tx, so if the key happened to be physically active at this exact
     // moment, whatever later call tried to bring it back up would see key_tx == 0 and skip that
