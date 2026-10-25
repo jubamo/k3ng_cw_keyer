@@ -1,1 +1,9 @@
+.DS_Store
+
 k3ng_keyer/.theia/launch.json
+
+# PlatformIO
+.pio/
+.vscode/*
+k3ng_keyer/*.ino.cpp
+
